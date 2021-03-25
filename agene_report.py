@@ -1,8 +1,10 @@
 from collections import defaultdict
+from os.path import isdir
 from typing import DefaultDict
 import xlrd
 from docxtpl import DocxTemplate, RichText
 import sys,pathlib
+from multiprocessing import Pool
 
 pp = pathlib.Path(sys.argv[0])
 tpl_path = pp.absolute().parent / 'tpl'
@@ -30,18 +32,22 @@ rgisample = []
 hysample = []
 mzsample = []
 boaosample = []
+rysample = []
 report_date = {}
 report_sample = []
+allsample = []
 the_type = defaultdict(str)
-sample_type = defaultdict(str)
+sa_type = defaultdict(str)
+reportid = defaultdict(str)
+library = defaultdict(str)
 
-def getSampleInfo(inputfile,rgidir):
+def getSampleInfo(inputfile,inputdir):
     sn = 1
     num = 6
     samplesn = defaultdict(int)
     samplenum = defaultdict(int)
     book = xlrd.open_workbook(inputfile)
-    allsample = []
+    
     sample = defaultdict(dict)
 
     ##读取BASIC sheet
@@ -52,7 +58,8 @@ def getSampleInfo(inputfile,rgidir):
         report_date[sample_id] = infosheet.row(i)[17].value.strip()
         the_type[sample_id] = infosheet.row(i)[18].value.strip()
         sample[sample_id].update({ 'the_type':the_type[sample_id] })
-        sample_type[sample_id] = infosheet.row(i)[19].value.strip()
+        sa_type[sample_id] = infosheet.row(i)[19].value.strip()
+        reportid[sample_id] = infosheet.row(i)[2].value.strip()
         samplesn[sample_id] = sn
         samplenum[sample_id] = num
         for m, n in zip(infosheet.row(i), infoName):
@@ -84,6 +91,10 @@ def getSampleInfo(inputfile,rgidir):
                 print(f'博奥报告：{tpl[0]}')                
                 sample[tpl[0]].update({ 'project_type':tpl[2] })
                 boaosample.append(tpl[0])
+            elif tpl[-1].find('ry') > -1:
+                print(f'锐翌报告：{tpl[0]}')                
+                sample[tpl[0]].update({ 'project_type':tpl[2] })
+                rysample.append(tpl[0])
             else:
                 print(f'aja/zju/nj 报告：{tpl[0]}')
                 sample[tpl[0]].update({ 'project_type':tpl[2] })
@@ -106,15 +117,16 @@ def getSampleInfo(inputfile,rgidir):
     possheet = book.sheet_by_index(2)
     highBacteria,highVirus,highFungi,highParasite,highSpecial = defaultdict(list),defaultdict(list),defaultdict(list),defaultdict(list),defaultdict(list)
     lowBacteria,lowVirus,lowFungi,lowParasite,lowSpecial = defaultdict(list),defaultdict(list),defaultdict(list),defaultdict(list),defaultdict(list)
-    virusList,bacteriaList,fungiList,parasiteList,specialList = defaultdict(list),defaultdict(list),defaultdict(list),defaultdict(list),defaultdict(list)
+    virusList,bacteriaList,fungiList,parasiteList,specialList,mycoList,zytList = defaultdict(list),defaultdict(list),defaultdict(list),defaultdict(list),defaultdict(list),defaultdict(list),defaultdict(list)
     description,papers = defaultdict(list),defaultdict(list)
     highList,lowList = defaultdict(list),defaultdict(list)
     fungi_parasiteList,bacteria_specialList = defaultdict(list),defaultdict(list)
-    library = defaultdict(str)
-
+    
     sampleposReads = defaultdict(lambda: defaultdict(int))
     sampleposInfos = defaultdict(lambda: defaultdict(list))
     allmicro = defaultdict(lambda: defaultdict(str))
+    micro = defaultdict(list)
+    all_micro = defaultdict(str)
         
     for i in range(1,possheet.nrows):
         pos = [str(j.value).strip() for j in possheet.row(i)]
@@ -125,10 +137,14 @@ def getSampleInfo(inputfile,rgidir):
     area = defaultdict(lambda: defaultdict(list))
     znen = defaultdict(lambda: defaultdict(list))
     species_type = defaultdict(lambda: defaultdict(list))
+    genus_type = defaultdict(lambda: defaultdict(list))
     for i in sampleposReads:
         for s, v in sorted(sampleposReads[i].items(), key=lambda x: x[1], reverse=True):
             pos = sampleposInfos[i][s]   
-            species_type[pos[0]][pos[10]] = pos[2]         
+            species_type[pos[0]][pos[10]] = pos[2]
+            genus_type[pos[0]][pos[10]] = pos[9]
+            if pos[0] in rysample:
+                micro[pos[0]].append(pos[8] + '( ' + pos[3] + ' )')
             speRT2 = RichText()
             speRT2.add(str(pos[8]) + '\n')
             speRT2.add(str(pos[3]),italic=True)
@@ -137,43 +153,72 @@ def getSampleInfo(inputfile,rgidir):
             genusRT.add(str(pos[10]), italic=True)
             abu_raw = float(pos[6])
             abu_clean = str(float('%.3f' % float(abu_raw))) if abu_raw > 0.001 else str('&lt;' + '0.001')
-            e_sp = {'type': str(pos[-3]),
+            e_sp = {'type': pos[-3],
                     'species': speRT2,
+                    's_zn': pos[8],
+                    's_en': RichText(pos[3],italic=True),
                     'scount': format(int(float(pos[4])),','),
                     'abundance': str(abu_clean) + str('%'),
                     'focus': str(pos[7])}
-            znen[pos[0]][pos[10]] = {'genus':genusRT, 'gcount': format(int(float(pos[5])), ',')}
+            znen[pos[0]][pos[10]] = {'genus':genusRT, 'gcount': format(int(float(pos[5])), ','), 'g_en': RichText(pos[10],italic=True), 'g_zn': pos[9]}
             if pos[10] in znen[pos[0]]:
                 area[pos[0]][pos[10]].append(e_sp) 
             else:
                 area[pos[0]][pos[10]] = [e_sp]
+    
+    for k,v in micro.items():
+        all_micro[k] = '、'.join(i for i in micro[k])
 
     for i in area:
-        for s, v in area[i].items():
-            znen[i][s]['area'] = area[i][s]
-            if species_type[i][s] == 'fungi':  
-                fungiList[i].append(znen[i][s])
-            elif species_type[i][s] == 'bacteria':
-                bacteriaList[i].append(znen[i][s])
-            elif species_type[i][s] == 'virus':
-                virusList[i].append(znen[i][s])
-            elif species_type[i][s] == 'parasite':
-                parasiteList[i].append(znen[i][s])
-            elif species_type[i][s] == 'special':
-                specialList[i].append(znen[i][s])
-            else:
-                print(f'{i}物种类型单词写错了！')
-            fungi_parasiteList[i] = fungiList[i] + parasiteList[i]
-            bacteria_specialList[i] = bacteriaList[i] + specialList[i]
+        if i not in rysample:
+            for s, v in area[i].items():
+                znen[i][s]['area'] = area[i][s]
+                if species_type[i][s] == 'fungi':  
+                    fungiList[i].append(znen[i][s])
+                elif species_type[i][s] == 'bacteria':
+                    bacteriaList[i].append(znen[i][s])
+                elif species_type[i][s] == 'virus':
+                    virusList[i].append(znen[i][s])
+                elif species_type[i][s] == 'parasite':
+                    parasiteList[i].append(znen[i][s])
+                elif species_type[i][s] == 'special':
+                    specialList[i].append(znen[i][s])
+                else:
+                    print(f'{i}物种类型单词写错了！')
+                fungi_parasiteList[i] = fungiList[i] + parasiteList[i]
+                bacteria_specialList[i] = bacteriaList[i] + specialList[i]
+        else:
+            for s, v in area[i].items():
+                znen[i][s]['area'] = area[i][s]
+                if species_type[i][s] == 'fungi':  
+                    fungiList[i].append(znen[i][s])
+                elif species_type[i][s] == 'bacteria':
+                    bacteriaList[i].append(znen[i][s])
+                elif species_type[i][s] == 'virus':
+                    virusList[i].append(znen[i][s])
+                elif species_type[i][s] == 'parasite':
+                    parasiteList[i].append(znen[i][s])
+                elif species_type[i][s] == 'special':
+                    if genus_type[i][s] == '分枝杆菌属':
+                        mycoList[i].append(znen[i][s])
+                    else:
+                        zytList[i].append(znen[i][s])
+                else:
+                    print(f'{i}物种类型单词写错了！')   
     
+    the_low = defaultdict(list)
     for i in sampleposReads:
         for s, v in sorted(sampleposReads[i].items(), key=lambda x: x[1], reverse=True):
             pos = sampleposInfos[i][s]
+            the_low[pos[0]].append(pos[7])
             library[pos[0]] = pos[1]
-            microRT = RichText()
-            microRT.add(str(pos[8]) + '\n')
-            microRT.add(str(pos[3]),italic=True)
-            allmicro[pos[0]][pos[3]] = microRT
+            if pos[0] not in rysample:
+                microRT = RichText()
+                microRT.add(pos[8] + '\n')
+                microRT.add(pos[3],italic=True)
+                allmicro[pos[0]][pos[3]] = microRT
+            else:
+                allmicro[pos[0]][pos[3]] = pos[8]
             speRT = RichText()
             speRT.add(str(pos[8]) + ' ( ')
             speRT.add(str(pos[3]),italic=True)
@@ -269,6 +314,8 @@ def getSampleInfo(inputfile,rgidir):
     ##读取阴性疑似病原体和背景微生物信息
     negsheet = book.sheet_by_index(3)
     backlist = defaultdict(list)
+    all_back = defaultdict(list)
+    all_backlist = defaultdict(str)
     sampleneg_by_Reads = defaultdict(lambda: defaultdict(int))
     sampleneg_by_Infos = defaultdict(lambda: defaultdict(list))
     sampleneg_bj_Reads = defaultdict(lambda: defaultdict(int))
@@ -276,21 +323,26 @@ def getSampleInfo(inputfile,rgidir):
     
     for i in range(1,negsheet.nrows):
         neg = [str(j.value).strip() for j in negsheet.row(i)]
-        if neg[0] in rgisample or neg[0] in hysample or neg[0] in mzsample:
-            if str(neg[5]) == '疑似病原体':
-                sampleneg_by_Reads[neg[0]][neg[2]] = int(float(neg[4]))
-                sampleneg_by_Infos[neg[0]][neg[2]] = neg
-            else:
-                sampleneg_bj_Reads[neg[0]][neg[2]] = int(float(neg[4]))
-                sampleneg_bj_Infos[neg[0]][neg[2]] = neg
+        if str(neg[5]) == '疑似病原体':
+            sampleneg_by_Reads[neg[0]][neg[2]] = int(float(neg[4]))
+            sampleneg_by_Infos[neg[0]][neg[2]] = neg
+        else:
+            sampleneg_bj_Reads[neg[0]][neg[2]] = int(float(neg[4]))
+            sampleneg_bj_Infos[neg[0]][neg[2]] = neg
     
     for i in sampleneg_by_Reads:
         for s, v in sorted(sampleneg_by_Reads[i].items(), key=lambda x: x[1], reverse=True):
             neg = sampleneg_by_Infos[i][s]
-            speRT = RichText()
-            speRT.add(str(neg[3]) + '\n( ')
-            speRT.add(str(neg[2]),italic=True)
-            speRT.add(' )')
+            if neg[0] in boaosample:
+                speRT = RichText()
+                speRT.add(str(neg[3]) + ' ( ')
+                speRT.add(str(neg[2]),italic=True)
+                speRT.add(' )')
+            else:
+                speRT = RichText()
+                speRT.add(str(neg[3]) + '\n( ')
+                speRT.add(str(neg[2]),italic=True)
+                speRT.add(' )')
             descRT = RichText()
             paperRT = RichText()
             if neg[0] in rgisample:
@@ -352,37 +404,57 @@ def getSampleInfo(inputfile,rgidir):
                 description[neg[0]].append(descRT)
             samplesn[neg[0]] += 1
             samplenum[neg[0]] += 1
-            backlist[neg[0]].append({'type':neg[1],'microbe':speRT,'count':f'{int(float(neg[4])):,}','note':neg[5]})
+            if neg[0] in boaosample:
+                backlist[neg[0]].append({'type':neg[1],'microbe':speRT,'count':f'{int(float(neg[4])):,}','note':neg[5]})
+            else:
+                backlist[neg[0]].append({'type':neg[1],'microbe':speRT,'count':f'{int(float(neg[4])):,}','note':neg[5]})
     
     for i in sampleneg_bj_Reads:
-        for s, v in sorted(sampleneg_bj_Reads[i].items(), key=lambda x: x[1], reverse=True):
-            neg = sampleneg_bj_Infos[i][s]
-            speRT = RichText()
-            speRT.add(str(neg[3]) + '\n( ')
-            speRT.add(str(neg[2]),italic=True)
-            speRT.add(' )')
-            descRT = RichText()
-            paperRT = RichText()
-            if neg[-1] != '':
-                descRT.add(str(samplesn[neg[0]]) + '. ')
-                if neg[0] in rgisample:
-                    descRT.add(neg[3], color='#1BB8CE',bold=True)
-                elif neg[0] in hysample:
-                    descRT.add(neg[3], color='#0079CA',bold=True)
+        id = i.strip().split('\t')[0]
+        if id in boaosample:
+            with open(f'{sys.argv[3]}/{reportid[id]}_背景列表.xls','w') as boaoback:
+                boaoback.write(f'name\tChinese\thit_reads\n')
+                for s, v in sorted(sampleneg_bj_Reads[i].items(), key=lambda x: x[1], reverse=True):
+                    neg = sampleneg_bj_Infos[i][s]
+                    if neg[0] == str(id):
+                        boaoback.write(f'{neg[2]}\t{neg[3]}\t{int(float(neg[4]))}\n')
+                boaoback.close()
+        else:                    
+            for s, v in sorted(sampleneg_bj_Reads[i].items(), key=lambda x: x[1], reverse=True):
+                neg = sampleneg_bj_Infos[i][s]
+                speRT = RichText()
+                speRT.add(str(neg[3]) + '\n( ')
+                speRT.add(str(neg[2]),italic=True)
+                speRT.add(' )')
+                if neg[0] in rysample:
+                    all_back[neg[0]].append(neg[3] + '( ' + neg[2] + ' )')
+                descRT = RichText()
+                paperRT = RichText()
+                if neg[-1] != '':
+                    descRT.add(str(samplesn[neg[0]]) + '. ')
+                    if neg[0] in rgisample:
+                        descRT.add(neg[3], color='#1BB8CE',bold=True)
+                    elif neg[0] in hysample:
+                        descRT.add(neg[3], color='#0079CA',bold=True)
+                    else:
+                        descRT.add(neg[3], bold=True)
+                    descRT.add(' ( ')
+                    descRT.add(neg[2],italic=True)
+                    descRT.add(' )')
+                    descRT.add('[' + str(samplenum[neg[0]]) + ']',style='sup')
+                    descRT.add(' : ' + f'{neg[-2]}')
+                    description[neg[0]].append(descRT)
+                    paperRT.add('[' + str(samplenum[neg[0]]) + '] ',style='paper')
+                    paperRT.add(str(neg[-1]),style='paper')   
+                    papers[neg[0]].append(paperRT)  
+                    samplesn[neg[0]] += 1
+                    samplenum[neg[0]] += 1
+                if neg[0] not in rysample:
+                    backlist[neg[0]].append({'type':neg[1],'microbe':speRT,'count':f'{int(float(neg[4])):,}','note':neg[5]})
                 else:
-                    descRT.add(neg[3], bold=True)
-                descRT.add(' ( ')
-                descRT.add(neg[2],italic=True)
-                descRT.add(' )')
-                descRT.add('[' + str(samplenum[neg[0]]) + ']',style='sup')
-                descRT.add(' : ' + f'{neg[-2]}')
-                description[neg[0]].append(descRT)
-                paperRT.add('[' + str(samplenum[neg[0]]) + '] ',style='paper')
-                paperRT.add(str(neg[-1]),style='paper')   
-                papers[neg[0]].append(paperRT)  
-            samplesn[neg[0]] += 1
-            samplenum[neg[0]] += 1
-            backlist[neg[0]].append({'type':neg[1],'microbe':speRT,'count':f'{int(float(neg[4])):,}','note':neg[5]})
+                    backlist[neg[0]].append({ 'type':neg[1],'microbe':speRT,'zn':neg[3],'en':RichText(neg[2],italic=True),'count':f'{int(float(neg[4])):,}','note':'疑似病原体，人体共生条件致病菌' })
+            for k,v in all_back.items():
+                all_backlist[k] = '、'.join(i for i in all_back[k])
             
     ##模版内容添加
     amr_summary = ''
@@ -390,6 +462,7 @@ def getSampleInfo(inputfile,rgidir):
         if i in possample:
             if i in rgisample or i in hysample:
                 sample[i].update({ 'report_type':'检出以下疑似病原体'})
+                sample[i].update({ 'the_desc':'(4) 带*标记病原体表示，该病原体低于检测阈值，需要临床综合考虑其致病可能性。'}) if '低*' in the_low[i] else sample[i].update({ 'the_desc':''})
                 sample[i].update({ 'highBacteria':highBacteria[i] }) if highBacteria[i] else sample[i].update({ 'highBacteria':[{'bacteria':'细菌','species':RichText('-')}]})
                 sample[i].update({ 'lowBacteria':lowBacteria[i] }) if lowBacteria[i] else sample[i].update({ 'lowBacteria':[{'bacteria':'细菌','species':RichText('-')}] })
                 sample[i].update({ 'highVirus':highVirus[i] }) if highVirus[i] else sample[i].update({ 'highVirus':[{'virus':'病毒','species':RichText('-')}] })
@@ -405,10 +478,10 @@ def getSampleInfo(inputfile,rgidir):
                 sample[i].update({ 'fungiList':fungiList[i] }) if fungiList[i] else sample[i].update({ 'fungiList':[{'genus':RichText('-'), 'gcount':'-', 'area':[{'species':RichText('-'), 'scount':'-', 'abundance':'-', 'focus':'-'}]}]})
                 sample[i].update({ 'parasiteList':parasiteList[i] }) if parasiteList[i] else sample[i].update({ 'parasiteList':[{'genus':RichText('-'), 'gcount':'-', 'area':[{'species':RichText('-'), 'scount':'-', 'abundance':'-', 'focus':'-'}]}]})
                 sample[i].update({ 'specialList':specialList[i] }) if specialList[i] else sample[i].update({ 'specialList':[{'genus':RichText('-'),'gcount':'-', 'area':[{'type':'-', 'species':RichText('-'), 'scount':'-', 'abundance':'-', 'focus':'-'}]}]})
-                sample[i].update({ 'backlist':backlist[i] }) if backlist[i] else sample[i].update({ 'backlist':[{'type':'-', 'microbe':RichText('-'), 'count':'-', 'note':'-'}] })
+                sample[i].update({ 'backlist':backlist[i] }) if backlist[i] else sample[i].update({ 'backlist':[{'type':'-','microbe':RichText('-'),'zn':'-','en':RichText('-'),'count':'-','note':'-'}] })
                 sample[i].update({ 'descriptions':description[i] }) if description[i] else sample[i].update({ 'descriptions':'-' })
                 sample[i].update({ 'papers':papers[i] }) if papers[i] else sample[i].update({ 'papers':'-' })
-                with open(f'{rgidir}/{library[i]}.gene_mapping_data.txt') as rgifile:
+                with open(f'{inputdir}/RGI/{library[i]}.gene_mapping_data.txt') as rgifile:
                     fh = rgifile.readlines()
                     if len(fh) == 1:
                         amr_summary = '通过分析，未检出耐药基因。'
@@ -459,7 +532,7 @@ def getSampleInfo(inputfile,rgidir):
                 sample[i].update({ 'backlist':backlist[i] }) if backlist[i] else sample[i].update({ 'backlist':[{'type':'-', 'microbe':RichText('-'), 'count':'-', 'note':'-'}] })
                 sample[i].update({ 'descriptions':description[i] }) if description[i] else sample[i].update({ 'descriptions':'-' })
                 sample[i].update({ 'amr':[{'species':RichText('-'), 'area':[{'mechanisms':'-', 'gene':RichText('-'), 'count':'-', 'coverage':'-', 'drug':'-'}]}] })
-                with open(f'{rgidir}/{library[i]}.gene_mapping_data.txt') as rgifile:
+                with open(f'{inputdir}/RGI/{library[i]}.gene_mapping_data.txt') as rgifile:
                     fh = rgifile.readlines()
                     if len(fh) == 1:
                         sample[i].update({ 'amr':[{'species':RichText('-'), 'area':[{'mechanisms':'-', 'gene':RichText('-'), 'count':'-', 'coverage':'-', 'drug':'-'}]}] })
@@ -496,6 +569,50 @@ def getSampleInfo(inputfile,rgidir):
                             sample[i].update({ 'amr':b })                    
                         elif flag == 0:
                             sample[i].update({ 'amr':[{'species':RichText('-'), 'area':[{'mechanisms':'-', 'gene':RichText('-'), 'count':'-', 'coverage':'-', 'drug':'-'}]}] })
+            elif i in rysample:
+                sample[i].update({ 'report_type':f'该样本中检测到的病原体有{RichText(all_micro[i],bold=True)}' })
+                sample[i].update({ 'all_backlist':RichText(all_backlist[i],bold=True) })
+                sample[i].update({ 'bacteriaList':bacteriaList[i] }) if bacteriaList[i] else sample[i].update({ 'bacteriaList':[{'genus':RichText('-'), 'gcount':'-', 'g_en': RichText('-'), 'g_zn': '-','area':[{'type':'-', 'species':RichText('-'), 's_en': RichText('-'), 's_zn': '-', 'scount':'-', 'abundance':'-', 'focus':'-'}]}]})
+                sample[i].update({ 'virusList':virusList[i] }) if virusList[i] else sample[i].update({ 'virusList':[{'genus':RichText('-'), 'gcount':'-', 'g_en': RichText('-'), 'g_zn': '-', 'area':[{'type':'-', 'species':RichText('-'), 's_en': RichText('-'), 's_zn': '-','scount':'-', 'abundance':'-', 'focus':'-'}]}]})
+                sample[i].update({ 'fungiList':fungiList[i] }) if fungiList[i] else sample[i].update({ 'fungiList':[{'genus':RichText('-'), 'gcount':'-', 'g_en': RichText('-'), 'g_zn': '-',  'area':[{'species':RichText('-'), 's_en': RichText('-'), 's_zn': '-', 'scount':'-', 'abundance':'-', 'focus':'-'}]}]})
+                sample[i].update({ 'parasiteList':parasiteList[i] }) if parasiteList[i] else sample[i].update({ 'parasiteList':[{'genus':RichText('-'), 'gcount':'-', 'g_en': RichText('-'), 'g_zn': '-',  'area':[{'species':RichText('-'), 's_en': RichText('-'), 's_zn': '-', 'scount':'-', 'abundance':'-', 'focus':'-'}]}]})
+                sample[i].update({ 'mycoList':mycoList[i] }) if mycoList[i] else sample[i].update({ 'mycoList':[{'genus':RichText('-'),'gcount':'-', 'g_en': RichText('-'), 'g_zn': '-', 'area':[{'type':'-', 'species':RichText('-'), 's_en': RichText('-'), 's_zn': '-', 'scount':'-', 'abundance':'-', 'focus':'-'}]}]})
+                sample[i].update({ 'zytList':zytList[i] }) if zytList[i] else sample[i].update({ 'zytList':[{'genus':RichText('-'),'gcount':'-', 'g_en': RichText('-'), 'g_zn': '-', 'area':[{'type':'-', 'species':RichText('-'), 's_en': RichText('-'), 's_zn': '-', 'scount':'-', 'abundance':'-', 'focus':'-'}]}]})
+                sample[i].update({ 'backlist':backlist[i] }) if backlist[i] else sample[i].update({ 'backlist':[{'type':'-', 'zn':'-', 'en':RichText('-'),'microbe':RichText('-'), 'count':'-', 'note':'-'}] })
+                with open(f'{inputdir}/RGI/{library[i]}.gene_mapping_data.txt') as rgifile:
+                    fh = rgifile.readlines()
+                    if len(fh) == 1:
+                        sample[i].update({ 'amr':[] })
+                    else:
+                        amr = defaultdict(lambda: defaultdict(list))
+                        amr_area = defaultdict(lambda: defaultdict(list))
+                        flag = 0
+                        for j in fh[1:]:
+                            e = j.strip().split('\t')
+                            if allmicro[i][str(e[-1])]:
+                                flag = 1
+                                mechanisms = ';'.join([med[x] for x in e[-2].split('; ')])    
+                                zn = allmicro[i][e[-1]]
+                                en = RichText(e[-1],italic=True)
+                                drug_en = RichText(e[4],italic=True)
+                                drugs = e[4].split('; ')
+                                rgis = '; '.join([rgi[x] for x in drugs])
+                                genename = RichText(e[1], italic=True)
+                                coverage = str(float('%.1f' % float(e[3]))) + str('%')
+                                amr[i][e[-1]] = { 'en':en, 'zn':zn }
+                                e_sp = { 'mechanisms':mechanisms, 'gene': genename, 'count': e[2].replace('.00', ''), 'drug_en':drug_en, 'drug_zn':rgis }
+                                if e[-1] in amr[i]:
+                                    amr_area[i][e[-1]].append(e_sp)
+                                else:
+                                    amr_area[i][e[-1]] = [e_sp]
+                        if flag == 1:
+                            b = []
+                            for k,v in amr_area[i].items():
+                                amr[i][k]['area'] = amr_area[i][k]
+                                b.append(amr[i][k])
+                            sample[i].update({ 'amr':b })                    
+                        elif flag == 0:
+                            amr = []
             else:
                 sample[i].update({ 'report_type':'检出以下疑似病原体'})
                 sample[i].update({ 'highBacteria':highBacteria[i] }) if highBacteria[i] else sample[i].update({ 'highBacteria':[{'bacteria':'细菌','species':RichText('未检出')}]})
@@ -516,10 +633,10 @@ def getSampleInfo(inputfile,rgidir):
                 sample[i].update({ 'backlist':backlist[i] }) if backlist[i] else sample[i].update({ 'backlist':[{'type':'-', 'microbe':RichText('-'), 'count':'-', 'note':'-'}] })
                 sample[i].update({ 'descriptions':description[i] }) if description[i] else sample[i].update({ 'descriptions':'-' })
                 sample[i].update({ 'papers':papers[i] }) if papers[i] else sample[i].update({ 'papers':'-' })
-                with open(f'{rgidir}/{library[i]}.gene_mapping_data.txt') as rgifile:
+                with open(f'{inputdir}/RGI/{library[i]}.gene_mapping_data.txt') as rgifile:
                     fh = rgifile.readlines()
                     if len(fh) == 1:
-                        amr = []
+                        sample[i].update({ 'amr':[] })
                     else:
                         amr = defaultdict(lambda: defaultdict(list))
                         amr_area = defaultdict(lambda: defaultdict(list))
@@ -586,6 +703,16 @@ def getSampleInfo(inputfile,rgidir):
                 sample[i].update({ 'backlist':backlist[i] }) if backlist[i] else sample[i].update({ 'backlist':[{'type':'-', 'microbe':RichText('-'), 'count':'-', 'note':'-'}] })
                 sample[i].update({ 'descriptions':description[i] }) if description[i] else sample[i].update({ 'descriptions':'-' })
                 sample[i].update({ 'amr':[{'species':RichText('-'), 'area':[{'mechanisms':'-', 'gene':RichText('-'), 'count':'-', 'coverage':'-', 'drug':'-'}]}] })
+            elif i in rysample:
+                sample[i].update({ 'report_type':'该样本中未检测到病原体' })
+                sample[i].update({ 'all_backlist':RichText(all_backlist[i],bold=True) })
+                sample[i].update({ 'bacteriaList':[{'genus':RichText('-'), 'gcount':'-', 'g_en': RichText('-'), 'g_zn': '-','area':[{'type':'-', 'species':RichText('-'),  's_en': RichText('-'), 's_zn': '-', 'scount':'-', 'abundance':'-', 'focus':'-'}]}]})
+                sample[i].update({ 'virusList':[{'genus':RichText('-'), 'gcount':'-', 'g_en': RichText('-'), 'g_zn': '-', 'area':[{'type':'-', 'species':RichText('-'), 's_en': RichText('-'), 's_zn': '-','scount':'-', 'abundance':'-', 'focus':'-'}]}]})
+                sample[i].update({ 'fungiList':[{'genus':RichText('-'), 'gcount':'-', 'g_en': RichText('-'), 'g_zn': '-',  'area':[{'species':RichText('-'), 's_en': RichText('-'), 's_zn': '-', 'scount':'-', 'abundance':'-', 'focus':'-'}]}]})
+                sample[i].update({ 'parasiteList':[{'genus':RichText('-'), 'gcount':'-', 'g_en': RichText('-'), 'g_zn': '-',  'area':[{'species':RichText('-'), 's_en': RichText('-'), 's_zn': '-', 'scount':'-', 'abundance':'-', 'focus':'-'}]}]})
+                sample[i].update({ 'mycoList':[{'genus':RichText('-'),'gcount':'-', 'g_en': RichText('-'), 'g_zn': '-', 'area':[{'type':'-', 'species':RichText('-'), 's_en': RichText('-'), 's_zn': '-', 'scount':'-', 'abundance':'-', 'focus':'-'}]}]})
+                sample[i].update({ 'zytList':[{'genus':RichText('-'),'gcount':'-', 'g_en': RichText('-'), 'g_zn': '-', 'area':[{'type':'-', 'species':RichText('-'), 's_en': RichText('-'), 's_zn': '-', 'scount':'-', 'abundance':'-', 'focus':'-'}]}]})
+                sample[i].update({ 'backlist':backlist[i] }) if backlist[i] else sample[i].update({ 'backlist':[{'type':'-','microbe':RichText('-'),'zn':'-','en':RichText('-'),'count':'-','note':'-'}] })
             else:
                 amr = []
                 sample[i].update({ 'report_type':'未检出明确的病原微生物'})
@@ -605,30 +732,86 @@ def getSampleInfo(inputfile,rgidir):
     
     ##读取数据量信息
     runstatsheet = book.sheet_by_index(5)
-    total_reads,human_reads,micro_reads,q30 = defaultdict(int),defaultdict(int),defaultdict(int),defaultdict(float)
+    total_reads,human_reads,nonhuman_reads,micro_reads,nonhuman_rate,q30 = defaultdict(int),defaultdict(int),defaultdict(int),defaultdict(int),defaultdict(float),defaultdict(float)
+    CSF_DNA_total,CSF_DNA_the_num,CSF_DNA_human,CSF_DNA_nonhuman,CSF_DNA_micro,CSF_DNA_q30 = defaultdict(int),defaultdict(int),defaultdict(int),defaultdict(int),defaultdict(int),defaultdict(float)
+    CSF_CF_total,CSF_CF_the_num,CSF_CF_human,CSF_CF_nonhuman,CSF_CF_micro,CSF_CF_q30 = defaultdict(int),defaultdict(int),defaultdict(int),defaultdict(int),defaultdict(int),defaultdict(float)
+    CSF_RNA_total,CSF_RNA_the_num,CSF_RNA_human,CSF_RNA_nonhuman,CSF_RNA_micro,CSF_RNA_q30 = defaultdict(int),defaultdict(int),defaultdict(int),defaultdict(int),defaultdict(int),defaultdict(float)
+    the_num = defaultdict(int)
+    the_sa = set()
     for i in range(1,runstatsheet.nrows):
         stat = [str(j.value).strip() for j in runstatsheet.row(i)]
         sa_id = stat[0].strip().split('-')
-        if len(sa_id) == 1:
-            if sa_id[0] not in total_reads:
-                total_reads[sa_id[0]] = int(float(stat[1]))
-                human_reads[sa_id[0]] = int(float(stat[2]))
-                micro_reads[sa_id[0]] = int(float(stat[4]))
-                q30[sa_id[0]] = float(stat[5])
+        the_sa.add(sa_id[0])
+        if sa_type[sa_id[0]] == '脑脊液':
+            if len(sa_id) == 1:
+                CSF_DNA_the_num[sa_id[0]] = 1
+                CSF_DNA_total[sa_id[0]] = int(float(stat[1]))
+                CSF_DNA_human[sa_id[0]] = int(float(stat[2]))
+                CSF_DNA_nonhuman[sa_id[0]] = int(float(stat[3]))
+                CSF_DNA_micro[sa_id[0]] = int(float(stat[4]))
+                CSF_DNA_q30[sa_id[0]] = float(stat[5])
+            elif len(sa_id) > 1 and sa_id[-1] == 'CF':
+                CSF_CF_the_num[sa_id[0]] = 1
+                CSF_CF_total[sa_id[0]] = int(float(stat[1]))
+                CSF_CF_human[sa_id[0]] = int(float(stat[2]))
+                CSF_CF_nonhuman[sa_id[0]] = int(float(stat[3]))
+                CSF_CF_micro[sa_id[0]] = int(float(stat[4]))
+                CSF_CF_q30[sa_id[0]] = float(stat[5])
+            elif len(sa_id) > 1 and sa_id[-1] == 'R':
+                CSF_RNA_the_num[sa_id[0]] = 1
+                CSF_RNA_total[sa_id[0]] = int(float(stat[1]))
+                CSF_RNA_human[sa_id[0]] = int(float(stat[2]))
+                CSF_RNA_nonhuman[sa_id[0]] = int(float(stat[3]))
+                CSF_RNA_micro[sa_id[0]] = int(float(stat[4]))
+                CSF_RNA_q30[sa_id[0]] = float(stat[5])        
         else:
-            if sa_id[0] in total_reads:
-                if sa_id[1] == 'R' or sa_id[1] == 'CF':                        
-                    total_reads[sa_id[0]] += int(float(stat[1]))
-                    human_reads[sa_id[0]] += int(float(stat[2]))
-                    micro_reads[sa_id[0]] += int(float(stat[4]))
-                    q30[sa_id[0]] += float(stat[5])
-            else:         
+            if sa_id[0] not in total_reads:
+                the_num[sa_id[0]] = 1
                 total_reads[sa_id[0]] = int(float(stat[1]))
                 human_reads[sa_id[0]] = int(float(stat[2]))
+                nonhuman_reads[sa_id[0]] = int(float(stat[3]))
                 micro_reads[sa_id[0]] = int(float(stat[4]))
                 q30[sa_id[0]] = float(stat[5])
+            else:
+                the_num[sa_id[0]] += 1
+                total_reads[sa_id[0]] += int(float(stat[1]))
+                human_reads[sa_id[0]] += int(float(stat[2]))
+                nonhuman_reads[sa_id[0]] += int(float(stat[3]))
+                micro_reads[sa_id[0]] += int(float(stat[4]))
+                q30[sa_id[0]] += float(stat[5])
 
-        sample[sa_id[0]].update({ 'total_reads':format(total_reads[sa_id[0]],','), 'human_reads':format(human_reads[sa_id[0]],','), 'micro_reads':format(micro_reads[sa_id[0]],','), 'q30':str('%.2f' % float((q30[sa_id[0]])/2)) })
+    for k in iter(the_sa):
+        if sa_type[k] == '脑脊液':
+            if CSF_CF_total[k] > 15_000_000:
+                the_num[k] = CSF_CF_the_num[k] + CSF_RNA_the_num[k]
+                total_reads[k] = CSF_CF_total[k] + CSF_RNA_total[k]
+                human_reads[k] = CSF_CF_human[k] + CSF_RNA_human[k]
+                nonhuman_reads[k] = CSF_CF_nonhuman[k] + CSF_RNA_nonhuman[k]
+                micro_reads[k] = CSF_CF_micro[k] + CSF_RNA_micro[k]
+                q30[k] = CSF_CF_q30[k] + CSF_RNA_q30[k]
+            elif CSF_DNA_total[k] > 15_000_000 and CSF_CF_total[k] < 15_000_000:
+                the_num[k] = CSF_DNA_the_num[k] + CSF_RNA_the_num[k]
+                total_reads[k] = CSF_DNA_total[k] + CSF_RNA_total[k]
+                human_reads[k] = CSF_DNA_human[k] + CSF_RNA_human[k]
+                nonhuman_reads[k] = CSF_DNA_nonhuman[k] + CSF_RNA_nonhuman[k]
+                micro_reads[k] = CSF_DNA_micro[k] + CSF_RNA_micro[k]
+                q30[k] = CSF_DNA_q30[k] + CSF_RNA_q30[k]
+            elif CSF_DNA_total[k] < 15_000_000 and CSF_CF_total[k] < 15_000_000:
+                the_num[k] = CSF_CF_the_num[k] + CSF_RNA_the_num[k]
+                total_reads[k] = CSF_CF_total[k] + CSF_RNA_total[k]
+                human_reads[k] = CSF_CF_human[k] + CSF_RNA_human[k]
+                nonhuman_reads[k] = CSF_CF_nonhuman[k] + CSF_RNA_nonhuman[k]
+                micro_reads[k] = CSF_CF_micro[k] + CSF_RNA_micro[k]
+                q30[k] = CSF_CF_q30[k] + CSF_RNA_q30[k]
+            nonhuman_rate[k] = nonhuman_reads[k]/total_reads[k] * 100
+            sample[k].update({ 'total_reads':format(total_reads[k],','), 'human_reads':format(human_reads[k],','), \
+                           'nonhuman_reads':format(nonhuman_reads[k],','),'micro_reads':format(micro_reads[k],','), \
+                           'nonhuman_rate':str('%.2f' % (float(nonhuman_rate[k]))),'q30':str('%.2f' % float((q30[k]/int(the_num[k])))) })
+        else:
+            nonhuman_rate[k] = nonhuman_reads[k]/total_reads[k] * 100
+            sample[k].update({ 'total_reads':format(total_reads[k],','), 'human_reads':format(human_reads[k],','), \
+                           'nonhuman_reads':format(nonhuman_reads[k],','),'micro_reads':format(micro_reads[k],','), \
+                           'nonhuman_rate':str('%.2f' % (float(nonhuman_rate[k]))),'q30':str('%.2f' % float((q30[k]/int(the_num[k])))) })
     return sample
 
 ##模版渲染，生成报告
@@ -653,21 +836,28 @@ def getrgiTemplate(info):
         doc = DocxTemplate(f'{str(tpl_path / "0201.fzch.docx")}')
         doc.render(info)
         doc.save(f'{sys.argv[3]}/{info["report_id"]}_{info["department_id"]}_{info["name"]}_mNGS检测报告.docx')
+    elif info['tpl'].find('ry') > -1:
+        doc = DocxTemplate(f'{str(tpl_path / "0309.ry.docx")}')
+        doc.render(info)
+        doc.save(f'{sys.argv[3]}/{info["report_id"]}_{info["department_id"]}_{info["name"]}_mNGS检测报告.docx')
     else:
         if info['tpl'].find('positive2') > -1 or info['tpl'].find('negative2') > -1:
-            doc = DocxTemplate(f'{str(tpl_path / "0201.zju.docx")}')
-            doc.replace_pic('图片 8',f'{str(tpl_path / "zju_jcz_blank.gif")}')
-            doc.replace_pic('图片 4',f'{str(tpl_path / "zju_shqz_blank.gif")}')
+            doc = DocxTemplate(f'{str(tpl_path / "0310.zju.docx")}')
+            doc.replace_pic('图片 23',f'{str(tpl_path / "zju_jcz_blank.gif")}')
+            doc.replace_pic('图片 55',f'{str(tpl_path / "zju_shqz_blank.gif")}')
             doc.replace_pic('image2.png',f'{str(tpl_path / "zju_blank.png")}')
+            doc.replace_pic('图片 11',str(f'{sys.argv[2]}/QC/{info["sample_id"]}.per_base_quality.png'))
             doc.render(info)
             doc.save(f'{sys.argv[3]}/{info["report_id"]}_{info["department_id"]}_{info["name"]}_mNGS检测报告.docx')
         else:
             if info['tpl'].find('aja') > -1:
-                doc = DocxTemplate(f'{str(tpl_path / "0201.aja.docx")}')
+                doc = DocxTemplate(f'{str(tpl_path / "0310.aja.docx")}')
+                doc.replace_pic('图片 24',str(f'{sys.argv[2]}/QC/{info["sample_id"]}.per_base_quality.png'))
                 doc.render(info)
                 doc.save(f'{sys.argv[3]}/{info["report_id"]}_{info["department_id"]}_{info["name"]}_mNGS检测报告.docx')
             else:
-                doc = DocxTemplate(f'{str(tpl_path / "0201.zju.docx")}')
+                doc = DocxTemplate(f'{str(tpl_path / "0310.zju.docx")}')
+                doc.replace_pic('图片 11',str(f'{sys.argv[2]}/QC/{info["sample_id"]}.per_base_quality.png'))
                 doc.render(info)
                 doc.save(f'{sys.argv[3]}/{info["report_id"]}_{info["department_id"]}_{info["name"]}_mNGS检测报告.docx')
 
@@ -675,7 +865,7 @@ def main():
     sample = getSampleInfo(f'{sys.argv[1]}',f'{sys.argv[2]}')
     for k, v in sample.items():
         if k in report_sample:
-            getrgiTemplate(v) 
+            getrgiTemplate(v)
 
 if __name__ == '__main__':
     main()
