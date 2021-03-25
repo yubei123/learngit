@@ -817,7 +817,7 @@ def getSampleInfo(inputfile,inputdir):
 ##模版渲染，生成报告
 def getrgiTemplate(info):
     if info['tpl'].find('nj2h') > -1:
-        doc = DocxTemplate(f'{str(tpl_path / "0201.nj2h.docx")}')
+        doc = DocxTemplate(f'{str(tpl_path / "0320.nj2h.docx")}')
         doc.render(info)
         doc.save(f'{sys.argv[3]}/{info["report_id"]}_{info["department_id"]}_{info["name"]}_mNGS检测报告.docx')
     elif info['tpl'].find('boao') > -1:
