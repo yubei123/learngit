@@ -1,9 +1,10 @@
 from collections import defaultdict
 from os.path import isdir
+from re import I
 from typing import DefaultDict
 import xlrd
 from docxtpl import DocxTemplate, RichText
-import sys,pathlib
+import sys,pathlib,subprocess
 from multiprocessing import Pool
 
 pp = pathlib.Path(sys.argv[0])
@@ -39,7 +40,8 @@ allsample = []
 the_type = defaultdict(str)
 sa_type = defaultdict(str)
 reportid = defaultdict(str)
-library = defaultdict(str)
+library = defaultdict(list)
+kksa_num = defaultdict(int)
 
 def getSampleInfo(inputfile,inputdir):
     sn = 1
@@ -207,11 +209,12 @@ def getSampleInfo(inputfile,inputdir):
                     print(f'{i}物种类型单词写错了！')   
     
     the_low = defaultdict(list)
+    kk_micro = defaultdict(lambda: defaultdict(list))
     for i in sampleposReads:
         for s, v in sorted(sampleposReads[i].items(), key=lambda x: x[1], reverse=True):
             pos = sampleposInfos[i][s]
             the_low[pos[0]].append(pos[7])
-            library[pos[0]] = pos[1]
+            library[pos[0]].append(pos[1])
             if pos[0] not in rysample:
                 microRT = RichText()
                 microRT.add(pos[8] + '\n')
@@ -223,6 +226,7 @@ def getSampleInfo(inputfile,inputdir):
             speRT.add(str(pos[8]) + ' ( ')
             speRT.add(str(pos[3]),italic=True)
             speRT.add(' )')
+            kk_micro[pos[0]][pos[3]] = speRT
             descRT = RichText()
             paperRT = RichText()
             if pos[0] in rgisample:
@@ -455,6 +459,28 @@ def getSampleInfo(inputfile,inputdir):
                     backlist[neg[0]].append({ 'type':neg[1],'microbe':speRT,'zn':neg[3],'en':RichText(neg[2],italic=True),'count':f'{int(float(neg[4])):,}','note':'疑似病原体，人体共生条件致病菌' })
             for k,v in all_back.items():
                 all_backlist[k] = '、'.join(i for i in all_back[k])
+
+    ##绘制病原体覆盖度图
+    kkplotsheet = book.sheet_by_index(6)
+    the_kk = defaultdict(lambda: defaultdict(list))
+    for i in range(1,kkplotsheet.nrows):
+        kkplot = [str(j.value).strip() for j in kkplotsheet.row(i)]
+        kksa_id = kkplot[0].strip().split('-')[0]
+        kkmicro = kkplot[1].replace('_',' ')
+        if kksa_id not in kksa_num:
+            kksa_num[kksa_id] = 1
+            the_kk[kksa_id][str(f'micro{kksa_num[kksa_id]}')] = kk_micro[kksa_id][kkmicro]
+            script = f'''/home/yong_sun/bin/plot/venv/bin/python /home/yong_sun/bin/plot/plotDepthCoverage4flask.py {kkplot[0]} {kkplot[1]} /data/mngsSYS/b/reportTMP/plot
+            cp /data/mngsSYS/b/reportTMP/plot/{kkplot[0]}.{kkplot[1]}.png /data/mngsSYS/b/reportTMP/plot/{kksa_id}.micro{kksa_num[kksa_id]}.png'''
+            subprocess.run(script, shell=True, stderr=subprocess.PIPE)
+#            print(a.stderr.decode('utf-8'))
+        else:
+            kksa_num[kksa_id] += 1
+            the_kk[kksa_id][str(f'micro{kksa_num[kksa_id]}')] = kk_micro[kksa_id][kkmicro]
+            script = f'''/home/yong_sun/bin/plot/venv/bin/python /home/yong_sun/bin/plot/plotDepthCoverage4flask.py {kkplot[0]} {kkplot[1]} /data/mngsSYS/b/reportTMP/plot
+            cp /data/mngsSYS/b/reportTMP/plot/{kkplot[0]}.{kkplot[1]}.png /data/mngsSYS/b/reportTMP/plot/{kksa_id}.micro{kksa_num[kksa_id]}.png'''
+            subprocess.run(script, shell=True, stderr=subprocess.PIPE)
+#            print(a.stderr.decode('utf-8'))
             
     ##模版内容添加
     amr_summary = ''
@@ -481,47 +507,56 @@ def getSampleInfo(inputfile,inputdir):
                 sample[i].update({ 'backlist':backlist[i] }) if backlist[i] else sample[i].update({ 'backlist':[{'type':'-','microbe':RichText('-'),'zn':'-','en':RichText('-'),'count':'-','note':'-'}] })
                 sample[i].update({ 'descriptions':description[i] }) if description[i] else sample[i].update({ 'descriptions':'-' })
                 sample[i].update({ 'papers':papers[i] }) if papers[i] else sample[i].update({ 'papers':'-' })
-                with open(f'{inputdir}/RGI/{library[i]}.gene_mapping_data.txt') as rgifile:
-                    fh = rgifile.readlines()
-                    if len(fh) == 1:
-                        amr_summary = '通过分析，未检出耐药基因。'
-                        sample[i].update({'amr_summary':amr_summary})
-                        sample[i].update({ 'amr':[{'species':RichText('-'), 'area':[{'mechanisms':'-', 'gene':RichText('-'), 'count':'-', 'coverage':'-', 'drug':'-'}]}] })
-                    else:
-                        amr = defaultdict(lambda: defaultdict(list))
-                        amr_area = defaultdict(lambda: defaultdict(list))
-                        flag = 0
-                        for j in fh[1:]:
-                            e = j.strip().split('\t')
-                            if allmicro[i][e[-1]]:
-                                flag = 1
-                                amr_summary = '通过分析，发现患者可能对以下抗生素耐药。'
-                                sample[i].update({'amr_summary':amr_summary})
-                                mechanisms = ';'.join([med[x] for x in e[-2].split('; ')])    
-                                species = allmicro[i][str(e[-1])]
-                                drugs = e[4].split('; ')
-                                rgis = '; '.join([rgi[x] for x in drugs])
-                                genename = RichText(e[1], italic=True)
-                                coverage = str(float('%.1f' % float(e[3]))) + str('%')
-                                amr[i][e[-1]] = { 'species':species }
-                                if len(drugs) <= 3:
-                                    e_sp = { 'mechanisms':mechanisms, 'gene': genename, 'count': e[2].replace('.00', ''), 'coverage':coverage, 'drug':rgis }
-                                else:
-                                    e_sp = { 'mechanisms':mechanisms, 'gene': genename, 'count': e[2].replace('.00', ''), 'coverage':coverage, 'drug':'多重耐药' }
-                                if e[-1] in amr[i]:
-                                    amr_area[i][e[-1]].append(e_sp)
-                                else:
-                                    amr_area[i][e[-1]] = [e_sp]
-                        if flag == 1:
-                            b = []
-                            for k,v in amr_area[i].items():
-                                amr[i][k]['area'] = amr_area[i][k]
-                                b.append(amr[i][k])
-                            sample[i].update({ 'amr':b })                    
-                        elif flag == 0:
+                if kksa_num[i] == 0:
+                    sample[i].update({ 'micro1' : RichText('无'), 'micro2' : RichText(''), 'micro3' : RichText(''), 'desc1': '', 'desc2': '', 'desc3': '' })
+                elif kksa_num[i] == 1:
+                    sample[i].update({ 'micro1' : RichText(the_kk[i]["micro1"]), 'micro2' : RichText(''), 'micro3' : RichText(''), 'desc1': '基因组覆盖度图', 'desc2': '', 'desc3': '' })
+                elif kksa_num[i] == 2:
+                    sample[i].update({ 'micro1' : RichText(the_kk[i]["micro1"]), 'micro2' : RichText(the_kk[i]["micro2"]), 'micro3' : RichText(''), 'desc1': '基因组覆盖度图', 'desc2': '基因组覆盖度图', 'desc3': '' })
+                elif kksa_num[i] == 3:
+                    sample[i].update({ 'micro1' : RichText(the_kk[i]["micro1"]), 'micro2' : RichText(the_kk[i]["micro2"]), 'micro3' : RichText(the_kk[i]["micro3"]), 'desc1': '基因组覆盖度图', 'desc2': '基因组覆盖度图', 'desc3': '基因组覆盖度图' })
+                b = []
+                amr = defaultdict(lambda: defaultdict(list))
+                amr_area = defaultdict(lambda: defaultdict(list))
+                flag = 0
+                for k in library[i]:
+                    with open(f'{inputdir}/RGI/{k}.gene_mapping_data.txt') as rgifile:
+                        fh = rgifile.readlines()
+                        if len(fh) == 1:
                             amr_summary = '通过分析，未检出耐药基因。'
                             sample[i].update({'amr_summary':amr_summary})
                             sample[i].update({ 'amr':[{'species':RichText('-'), 'area':[{'mechanisms':'-', 'gene':RichText('-'), 'count':'-', 'coverage':'-', 'drug':'-'}]}] })
+                        else:
+                            for j in fh[1:]:
+                                e = j.strip().split('\t')
+                                if allmicro[i][e[-1]]:
+                                    flag = 1
+                                    amr_summary = '通过分析，发现患者可能对以下抗生素耐药。'
+                                    sample[i].update({'amr_summary':amr_summary})
+                                    mechanisms = ';'.join([med[x] for x in e[-2].split('; ')])    
+                                    species = allmicro[i][str(e[-1])]
+                                    drugs = e[4].split('; ')
+                                    rgis = '; '.join([rgi[x] for x in drugs])
+                                    genename = RichText(e[1], italic=True)
+                                    coverage = str(float('%.1f' % float(e[3]))) + str('%')
+                                    amr[i][e[-1]] = { 'species':species }
+                                    if len(drugs) <= 3:
+                                        e_sp = { 'mechanisms':mechanisms, 'gene': genename, 'count': e[2].replace('.00', ''), 'coverage':coverage, 'drug':rgis }
+                                    else:
+                                        e_sp = { 'mechanisms':mechanisms, 'gene': genename, 'count': e[2].replace('.00', ''), 'coverage':coverage, 'drug':'多重耐药' }
+                                    if e[-1] in amr[i]:
+                                        amr_area[i][e[-1]].append(e_sp)
+                                    else:
+                                        amr_area[i][e[-1]] = [e_sp]
+                if flag == 1:
+                    for k,v in amr_area[i].items():
+                        amr[i][k]['area'] = amr_area[i][k]
+                        b.append(amr[i][k])
+                    sample[i].update({ 'amr':b })                    
+                elif flag == 0:
+                    amr_summary = '通过分析，未检出耐药基因。'
+                    sample[i].update({'amr_summary':amr_summary})
+                    sample[i].update({ 'amr':[{'species':RichText('-'), 'area':[{'mechanisms':'-', 'gene':RichText('-'), 'count':'-', 'coverage':'-', 'drug':'-'}]}] })
             elif i in boaosample:
                 sample[i].update({ 'report_type':'检出以上疑似病原体'})
                 sample[i].update({ 'highList':highList[i] }) if highList[i] else sample[i].update({ 'highList':[{'species':RichText('-')}] })
@@ -532,43 +567,44 @@ def getSampleInfo(inputfile,inputdir):
                 sample[i].update({ 'backlist':backlist[i] }) if backlist[i] else sample[i].update({ 'backlist':[{'type':'-', 'microbe':RichText('-'), 'count':'-', 'note':'-'}] })
                 sample[i].update({ 'descriptions':description[i] }) if description[i] else sample[i].update({ 'descriptions':'-' })
                 sample[i].update({ 'amr':[{'species':RichText('-'), 'area':[{'mechanisms':'-', 'gene':RichText('-'), 'count':'-', 'coverage':'-', 'drug':'-'}]}] })
-                with open(f'{inputdir}/RGI/{library[i]}.gene_mapping_data.txt') as rgifile:
-                    fh = rgifile.readlines()
-                    if len(fh) == 1:
-                        sample[i].update({ 'amr':[{'species':RichText('-'), 'area':[{'mechanisms':'-', 'gene':RichText('-'), 'count':'-', 'coverage':'-', 'drug':'-'}]}] })
-                    else:
-                        amr = defaultdict(lambda: defaultdict(list))
-                        amr_area = defaultdict(lambda: defaultdict(list))
-                        flag = 0
-                        for j in fh[1:]:
-                            e = j.strip().split('\t')
-                            if allmicro[i][str(e[-1])]:
-                                flag = 1
-                                amr_summary = '通过分析，发现患者可能对以下抗生素耐药。'
-                                sample[i].update({'amr_summary':amr_summary})
-                                mechanisms = ';'.join([med[x] for x in e[-2].split('; ')])    
-                                species = allmicro[i][str(e[-1])]
-                                drugs = e[4].split('; ')
-                                rgis = '; '.join([rgi[x] for x in drugs])
-                                genename = RichText(e[1], italic=True)
-                                coverage = str(float('%.1f' % float(e[3]))) + str('%')
-                                amr[i][e[-1]] = { 'species':species }
-                                if len(drugs) <= 3:
-                                    e_sp = { 'mechanisms':mechanisms, 'gene': genename, 'count': e[2].replace('.00', ''), 'coverage':coverage, 'drug':rgis }
-                                else:
-                                    e_sp = { 'mechanisms':mechanisms, 'gene': genename, 'count': e[2].replace('.00', ''), 'coverage':coverage, 'drug':'多重耐药' }
-                                if e[-1] in amr[i]:
-                                    amr_area[i][e[-1]].append(e_sp)
-                                else:
-                                    amr_area[i][e[-1]] = [e_sp]
-                        if flag == 1:
-                            b = []
-                            for k,v in amr_area[i].items():
-                                amr[i][k]['area'] = amr_area[i][k]
-                                b.append(amr[i][k])
-                            sample[i].update({ 'amr':b })                    
-                        elif flag == 0:
+                b = []
+                amr = defaultdict(lambda: defaultdict(list))
+                amr_area = defaultdict(lambda: defaultdict(list))
+                flag = 0
+                for k in library[i]:
+                    with open(f'{inputdir}/RGI/{k}.gene_mapping_data.txt') as rgifile:
+                        fh = rgifile.readlines()
+                        if len(fh) == 1:
                             sample[i].update({ 'amr':[{'species':RichText('-'), 'area':[{'mechanisms':'-', 'gene':RichText('-'), 'count':'-', 'coverage':'-', 'drug':'-'}]}] })
+                        else:
+                            for j in fh[1:]:
+                                e = j.strip().split('\t')
+                                if allmicro[i][str(e[-1])]:
+                                    flag = 1
+                                    amr_summary = '通过分析，发现患者可能对以下抗生素耐药。'
+                                    sample[i].update({'amr_summary':amr_summary})
+                                    mechanisms = ';'.join([med[x] for x in e[-2].split('; ')])    
+                                    species = allmicro[i][str(e[-1])]
+                                    drugs = e[4].split('; ')
+                                    rgis = '; '.join([rgi[x] for x in drugs])
+                                    genename = RichText(e[1], italic=True)
+                                    coverage = str(float('%.1f' % float(e[3]))) + str('%')
+                                    amr[i][e[-1]] = { 'species':species }
+                                    if len(drugs) <= 3:
+                                        e_sp = { 'mechanisms':mechanisms, 'gene': genename, 'count': e[2].replace('.00', ''), 'coverage':coverage, 'drug':rgis }
+                                    else:
+                                        e_sp = { 'mechanisms':mechanisms, 'gene': genename, 'count': e[2].replace('.00', ''), 'coverage':coverage, 'drug':'多重耐药' }
+                                    if e[-1] in amr[i]:
+                                        amr_area[i][e[-1]].append(e_sp)
+                                    else:
+                                        amr_area[i][e[-1]] = [e_sp]
+                if flag == 1:
+                    for k,v in amr_area[i].items():
+                        amr[i][k]['area'] = amr_area[i][k]
+                        b.append(amr[i][k])
+                    sample[i].update({ 'amr':b })                    
+                elif flag == 0:
+                    sample[i].update({ 'amr':[{'species':RichText('-'), 'area':[{'mechanisms':'-', 'gene':RichText('-'), 'count':'-', 'coverage':'-', 'drug':'-'}]}] })
             elif i in rysample:
                 sample[i].update({ 'report_type':f'该样本中检测到的病原体有{RichText(all_micro[i],bold=True)}' })
                 sample[i].update({ 'all_backlist':RichText(all_backlist[i],bold=True) })
@@ -579,40 +615,41 @@ def getSampleInfo(inputfile,inputdir):
                 sample[i].update({ 'mycoList':mycoList[i] }) if mycoList[i] else sample[i].update({ 'mycoList':[{'genus':RichText('-'),'gcount':'-', 'g_en': RichText('-'), 'g_zn': '-', 'area':[{'type':'-', 'species':RichText('-'), 's_en': RichText('-'), 's_zn': '-', 'scount':'-', 'abundance':'-', 'focus':'-'}]}]})
                 sample[i].update({ 'zytList':zytList[i] }) if zytList[i] else sample[i].update({ 'zytList':[{'genus':RichText('-'),'gcount':'-', 'g_en': RichText('-'), 'g_zn': '-', 'area':[{'type':'-', 'species':RichText('-'), 's_en': RichText('-'), 's_zn': '-', 'scount':'-', 'abundance':'-', 'focus':'-'}]}]})
                 sample[i].update({ 'backlist':backlist[i] }) if backlist[i] else sample[i].update({ 'backlist':[{'type':'-', 'zn':'-', 'en':RichText('-'),'microbe':RichText('-'), 'count':'-', 'note':'-'}] })
-                with open(f'{inputdir}/RGI/{library[i]}.gene_mapping_data.txt') as rgifile:
-                    fh = rgifile.readlines()
-                    if len(fh) == 1:
-                        sample[i].update({ 'amr':[] })
-                    else:
-                        amr = defaultdict(lambda: defaultdict(list))
-                        amr_area = defaultdict(lambda: defaultdict(list))
-                        flag = 0
-                        for j in fh[1:]:
-                            e = j.strip().split('\t')
-                            if allmicro[i][str(e[-1])]:
-                                flag = 1
-                                mechanisms = ';'.join([med[x] for x in e[-2].split('; ')])    
-                                zn = allmicro[i][e[-1]]
-                                en = RichText(e[-1],italic=True)
-                                drug_en = RichText(e[4],italic=True)
-                                drugs = e[4].split('; ')
-                                rgis = '; '.join([rgi[x] for x in drugs])
-                                genename = RichText(e[1], italic=True)
-                                coverage = str(float('%.1f' % float(e[3]))) + str('%')
-                                amr[i][e[-1]] = { 'en':en, 'zn':zn }
-                                e_sp = { 'mechanisms':mechanisms, 'gene': genename, 'count': e[2].replace('.00', ''), 'drug_en':drug_en, 'drug_zn':rgis }
-                                if e[-1] in amr[i]:
-                                    amr_area[i][e[-1]].append(e_sp)
-                                else:
-                                    amr_area[i][e[-1]] = [e_sp]
-                        if flag == 1:
-                            b = []
-                            for k,v in amr_area[i].items():
-                                amr[i][k]['area'] = amr_area[i][k]
-                                b.append(amr[i][k])
-                            sample[i].update({ 'amr':b })                    
-                        elif flag == 0:
-                            amr = []
+                b = []
+                amr = defaultdict(lambda: defaultdict(list))
+                amr_area = defaultdict(lambda: defaultdict(list))
+                flag = 0
+                for k in library[i]:
+                    with open(f'{inputdir}/RGI/{k}.gene_mapping_data.txt') as rgifile:
+                        fh = rgifile.readlines()
+                        if len(fh) == 1:
+                            sample[i].update({ 'amr':[] })
+                        else:
+                            for j in fh[1:]:
+                                e = j.strip().split('\t')
+                                if allmicro[i][str(e[-1])]:
+                                    flag = 1
+                                    mechanisms = ';'.join([med[x] for x in e[-2].split('; ')])    
+                                    zn = allmicro[i][e[-1]]
+                                    en = RichText(e[-1],italic=True)
+                                    drug_en = RichText(e[4],italic=True)
+                                    drugs = e[4].split('; ')
+                                    rgis = '; '.join([rgi[x] for x in drugs])
+                                    genename = RichText(e[1], italic=True)
+                                    coverage = str(float('%.1f' % float(e[3]))) + str('%')
+                                    amr[i][e[-1]] = { 'en':en, 'zn':zn }
+                                    e_sp = { 'mechanisms':mechanisms, 'gene': genename, 'count': e[2].replace('.00', ''), 'drug_en':drug_en, 'drug_zn':rgis }
+                                    if e[-1] in amr[i]:
+                                        amr_area[i][e[-1]].append(e_sp)
+                                    else:
+                                        amr_area[i][e[-1]] = [e_sp]
+                if flag == 1:
+                    for k,v in amr_area[i].items():
+                        amr[i][k]['area'] = amr_area[i][k]
+                        b.append(amr[i][k])
+                    sample[i].update({ 'amr':b })                    
+                elif flag == 0:
+                    amr = []
             else:
                 sample[i].update({ 'report_type':'检出以下疑似病原体'})
                 sample[i].update({ 'highBacteria':highBacteria[i] }) if highBacteria[i] else sample[i].update({ 'highBacteria':[{'bacteria':'细菌','species':RichText('未检出')}]})
@@ -633,45 +670,47 @@ def getSampleInfo(inputfile,inputdir):
                 sample[i].update({ 'backlist':backlist[i] }) if backlist[i] else sample[i].update({ 'backlist':[{'type':'-', 'microbe':RichText('-'), 'count':'-', 'note':'-'}] })
                 sample[i].update({ 'descriptions':description[i] }) if description[i] else sample[i].update({ 'descriptions':'-' })
                 sample[i].update({ 'papers':papers[i] }) if papers[i] else sample[i].update({ 'papers':'-' })
-                with open(f'{inputdir}/RGI/{library[i]}.gene_mapping_data.txt') as rgifile:
-                    fh = rgifile.readlines()
-                    if len(fh) == 1:
-                        sample[i].update({ 'amr':[] })
-                    else:
-                        amr = defaultdict(lambda: defaultdict(list))
-                        amr_area = defaultdict(lambda: defaultdict(list))
-                        flag = 0
-                        for j in fh[1:]:
-                            e = j.strip().split('\t')
-                            if allmicro[i][str(e[-1])]:
-                                flag = 1
-                                amr_summary = '通过分析，发现患者可能对以下抗生素耐药。'
-                                sample[i].update({'amr_summary':amr_summary})
-                                mechanisms = ';'.join([med[x] for x in e[-2].split('; ')])    
-                                species = allmicro[i][str(e[-1])]
-                                drugs = e[4].split('; ')
-                                rgis = '; '.join([rgi[x] for x in drugs])
-                                genename = RichText(e[1], italic=True)
-                                coverage = str(float('%.1f' % float(e[3]))) + str('%')
-                                amr[i][e[-1]] = { 'species':species }
-                                if len(drugs) <= 3:
-                                    e_sp = { 'mechanisms':mechanisms, 'gene': genename, 'count': e[2].replace('.00', ''), 'coverage':coverage, 'drug':rgis }
-                                else:
-                                    e_sp = { 'mechanisms':mechanisms, 'gene': genename, 'count': e[2].replace('.00', ''), 'coverage':coverage, 'drug':'多重耐药' }
-                                if e[-1] in amr[i]:
-                                    amr_area[i][e[-1]].append(e_sp)
-                                else:
-                                    amr_area[i][e[-1]] = [e_sp]
-                        if flag == 1:
-                            b = []
-                            for k,v in amr_area[i].items():
-                                amr[i][k]['area'] = amr_area[i][k]
-                                b.append(amr[i][k])
-                            sample[i].update({ 'amr':b })                    
-                        elif flag == 0:
-                            amr = []                            
+                b = []
+                amr = defaultdict(lambda: defaultdict(list))
+                amr_area = defaultdict(lambda: defaultdict(list))
+                flag = 0
+                for k in library[i]:
+                    with open(f'{inputdir}/RGI/{k}.gene_mapping_data.txt') as rgifile:
+                        fh = rgifile.readlines()
+                        if len(fh) == 1:
+                            sample[i].update({ 'amr':[] })
+                        else:
+                            for j in fh[1:]:
+                                e = j.strip().split('\t')
+                                if allmicro[i][str(e[-1])]:
+                                    flag = 1
+                                    amr_summary = '通过分析，发现患者可能对以下抗生素耐药。'
+                                    sample[i].update({'amr_summary':amr_summary})
+                                    mechanisms = ';'.join([med[x] for x in e[-2].split('; ')])    
+                                    species = allmicro[i][str(e[-1])]
+                                    drugs = e[4].split('; ')
+                                    rgis = '; '.join([rgi[x] for x in drugs])
+                                    genename = RichText(e[1], italic=True)
+                                    coverage = str(float('%.1f' % float(e[3]))) + str('%')
+                                    amr[i][e[-1]] = { 'species':species }
+                                    if len(drugs) <= 3:
+                                        e_sp = { 'mechanisms':mechanisms, 'gene': genename, 'count': e[2].replace('.00', ''), 'coverage':coverage, 'drug':rgis }
+                                    else:
+                                        e_sp = { 'mechanisms':mechanisms, 'gene': genename, 'count': e[2].replace('.00', ''), 'coverage':coverage, 'drug':'多重耐药' }
+                                    if e[-1] in amr[i]:
+                                        amr_area[i][e[-1]].append(e_sp)
+                                    else:
+                                        amr_area[i][e[-1]] = [e_sp]
+                if flag == 1:
+                    for k,v in amr_area[i].items():
+                        amr[i][k]['area'] = amr_area[i][k]
+                        b.append(amr[i][k])
+                    sample[i].update({ 'amr':b })                    
+                elif flag == 0:
+                    amr = []                            
         elif i in negsample:
             if i in rgisample or i in hysample:
+                sample[i].update({ 'micro1' : RichText('无'), 'micro2' : RichText(''), 'micro3' : RichText(''), 'desc1': '', 'desc2': '', 'desc3': '' })
                 sample[i].update({ 'report_type':'未检出明确的病原微生物'})
                 sample[i].update({ 'highBacteria':[{'bacteria':'细菌','species':RichText('-')}]})
                 sample[i].update({ 'lowBacteria':[{'bacteria':'细菌','species':RichText('-')}] })
@@ -812,6 +851,7 @@ def getSampleInfo(inputfile,inputdir):
             sample[k].update({ 'total_reads':format(total_reads[k],','), 'human_reads':format(human_reads[k],','), \
                            'nonhuman_reads':format(nonhuman_reads[k],','),'micro_reads':format(micro_reads[k],','), \
                            'nonhuman_rate':str('%.2f' % (float(nonhuman_rate[k]))),'q30':str('%.2f' % float((q30[k]/int(the_num[k])))) })
+    
     return sample
 
 ##模版渲染，生成报告
@@ -842,24 +882,72 @@ def getrgiTemplate(info):
         doc.save(f'{sys.argv[3]}/{info["report_id"]}_{info["department_id"]}_{info["name"]}_mNGS检测报告.docx')
     else:
         if info['tpl'].find('positive2') > -1 or info['tpl'].find('negative2') > -1:
-            doc = DocxTemplate(f'{str(tpl_path / "0310.zju.docx")}')
+            doc = DocxTemplate(f'{str(tpl_path / "0325.zju.docx")}')
             doc.replace_pic('图片 23',f'{str(tpl_path / "zju_jcz_blank.gif")}')
             doc.replace_pic('图片 55',f'{str(tpl_path / "zju_shqz_blank.gif")}')
             doc.replace_pic('image2.png',f'{str(tpl_path / "zju_blank.png")}')
             doc.replace_pic('图片 11',str(f'{sys.argv[2]}/QC/{info["sample_id"]}.per_base_quality.png'))
-            doc.render(info)
-            doc.save(f'{sys.argv[3]}/{info["report_id"]}_{info["department_id"]}_{info["name"]}_mNGS检测报告.docx')
+            if kksa_num[info['sample_id']] == 0:
+                doc.render(info)
+                doc.save(f'{sys.argv[3]}/{info["report_id"]}_{info["department_id"]}_{info["name"]}_mNGS检测报告.docx')
+            elif kksa_num[info['sample_id']] == 1:
+                doc.replace_pic('图片 19',str(f'/data/mngsSYS/b/reportTMP/plot/{info["sample_id"]}.micro1.png'))
+                doc.render(info)
+                doc.save(f'{sys.argv[3]}/{info["report_id"]}_{info["department_id"]}_{info["name"]}_mNGS检测报告.docx')
+            elif kksa_num[info['sample_id']] == 2:
+                doc.replace_pic('图片 19',str(f'/data/mngsSYS/b/reportTMP/plot/{info["sample_id"]}.micro1.png'))
+                doc.replace_pic('图片 29',str(f'/data/mngsSYS/b/reportTMP/plot/{info["sample_id"]}.micro2.png'))
+                doc.render(info)
+                doc.save(f'{sys.argv[3]}/{info["report_id"]}_{info["department_id"]}_{info["name"]}_mNGS检测报告.docx')
+            elif kksa_num[info['sample_id']] == 3:
+                doc.replace_pic('图片 19',str(f'/data/mngsSYS/b/reportTMP/plot/{info["sample_id"]}.micro1.png'))
+                doc.replace_pic('图片 29',str(f'/data/mngsSYS/b/reportTMP/plot/{info["sample_id"]}.micro2.png'))
+                doc.replace_pic('图片 30',str(f'/data/mngsSYS/b/reportTMP/plot/{info["sample_id"]}.micro3.png'))
+                doc.render(info)
+                doc.save(f'{sys.argv[3]}/{info["report_id"]}_{info["department_id"]}_{info["name"]}_mNGS检测报告.docx')
         else:
             if info['tpl'].find('aja') > -1:
-                doc = DocxTemplate(f'{str(tpl_path / "0310.aja.docx")}')
+                doc = DocxTemplate(f'{str(tpl_path / "0325.aja.docx")}')
                 doc.replace_pic('图片 24',str(f'{sys.argv[2]}/QC/{info["sample_id"]}.per_base_quality.png'))
-                doc.render(info)
-                doc.save(f'{sys.argv[3]}/{info["report_id"]}_{info["department_id"]}_{info["name"]}_mNGS检测报告.docx')
+                if kksa_num[info['sample_id']] == 0:
+                    doc.render(info)
+                    doc.save(f'{sys.argv[3]}/{info["report_id"]}_{info["department_id"]}_{info["name"]}_mNGS检测报告.docx')
+                elif kksa_num[info['sample_id']] == 1:
+                    doc.replace_pic('图片 26',str(f'/data/mngsSYS/b/reportTMP/plot/{info["sample_id"]}.micro1.png'))
+                    doc.render(info)
+                    doc.save(f'{sys.argv[3]}/{info["report_id"]}_{info["department_id"]}_{info["name"]}_mNGS检测报告.docx')
+                elif kksa_num[info['sample_id']] == 2:
+                    doc.replace_pic('图片 26',str(f'/data/mngsSYS/b/reportTMP/plot/{info["sample_id"]}.micro1.png'))
+                    doc.replace_pic('图片 31',str(f'/data/mngsSYS/b/reportTMP/plot/{info["sample_id"]}.micro2.png'))
+                    doc.render(info)
+                    doc.save(f'{sys.argv[3]}/{info["report_id"]}_{info["department_id"]}_{info["name"]}_mNGS检测报告.docx')
+                elif kksa_num[info['sample_id']] == 3:
+                    doc.replace_pic('图片 26',str(f'/data/mngsSYS/b/reportTMP/plot/{info["sample_id"]}.micro1.png'))
+                    doc.replace_pic('图片 31',str(f'/data/mngsSYS/b/reportTMP/plot/{info["sample_id"]}.micro2.png'))
+                    doc.replace_pic('图片 32',str(f'/data/mngsSYS/b/reportTMP/plot/{info["sample_id"]}.micro3.png'))
+                    doc.render(info)
+                    doc.save(f'{sys.argv[3]}/{info["report_id"]}_{info["department_id"]}_{info["name"]}_mNGS检测报告.docx')
             else:
-                doc = DocxTemplate(f'{str(tpl_path / "0310.zju.docx")}')
+                doc = DocxTemplate(f'{str(tpl_path / "0325.zju.docx")}')
                 doc.replace_pic('图片 11',str(f'{sys.argv[2]}/QC/{info["sample_id"]}.per_base_quality.png'))
-                doc.render(info)
-                doc.save(f'{sys.argv[3]}/{info["report_id"]}_{info["department_id"]}_{info["name"]}_mNGS检测报告.docx')
+                if kksa_num[info['sample_id']] == 0:
+                    doc.render(info)
+                    doc.save(f'{sys.argv[3]}/{info["report_id"]}_{info["department_id"]}_{info["name"]}_mNGS检测报告.docx')
+                elif kksa_num[info['sample_id']] == 1:
+                    doc.replace_pic('图片 19',str(f'/data/mngsSYS/b/reportTMP/plot/{info["sample_id"]}.micro1.png'))
+                    doc.render(info)
+                    doc.save(f'{sys.argv[3]}/{info["report_id"]}_{info["department_id"]}_{info["name"]}_mNGS检测报告.docx')
+                elif kksa_num[info['sample_id']] == 2:
+                    doc.replace_pic('图片 19',str(f'/data/mngsSYS/b/reportTMP/plot/{info["sample_id"]}.micro1.png'))
+                    doc.replace_pic('图片 29',str(f'/data/mngsSYS/b/reportTMP/plot/{info["sample_id"]}.micro2.png'))
+                    doc.render(info)
+                    doc.save(f'{sys.argv[3]}/{info["report_id"]}_{info["department_id"]}_{info["name"]}_mNGS检测报告.docx')
+                elif kksa_num[info['sample_id']] == 3:
+                    doc.replace_pic('图片 19',str(f'/data/mngsSYS/b/reportTMP/plot/{info["sample_id"]}.micro1.png'))
+                    doc.replace_pic('图片 29',str(f'/data/mngsSYS/b/reportTMP/plot/{info["sample_id"]}.micro2.png'))
+                    doc.replace_pic('图片 30',str(f'/data/mngsSYS/b/reportTMP/plot/{info["sample_id"]}.micro3.png'))
+                    doc.render(info)
+                    doc.save(f'{sys.argv[3]}/{info["report_id"]}_{info["department_id"]}_{info["name"]}_mNGS检测报告.docx')
 
 def main():
     sample = getSampleInfo(f'{sys.argv[1]}',f'{sys.argv[2]}')
